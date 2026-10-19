@@ -2,6 +2,28 @@ import time
 import os
 import json
 import requests
+from datetime import datetime
+
+
+def get_current_time():
+    """报时"""
+    return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    #datetime.now()>>获取当前时间  strftime("%Y-%m-%d %H:%M:%S")>>转换 年-月-日 时-分-秒 的格式
+
+TOOLS = [
+    {
+        "type": "function",
+        "function": {
+            "type": "get_current_time",
+            "description": "获取当前日期和时间，当用户询问现在几点、今天几号时使用",
+            "paramaters": {
+                "type": "object",
+                "properties": {},
+                "required": [],
+            },
+        },
+    }
+]
 
 
 class OllamaClient:
@@ -13,7 +35,7 @@ class OllamaClient:
         model="qwen3.5:4b-q4_K_M",
         verbose=True,  # 计时开关
         system=None,  # 设定基础记忆模块
-        ):
+    ):
         self.url = base_url.strip("/")
         self.model = model
         self.verbose = verbose
@@ -21,29 +43,29 @@ class OllamaClient:
         if system:  # 判断是否存在基础记忆
             self.messages.append({"role": "system", "content": system})
 
-
     def save(self, path="history.json"):
         """把对话历史序列化后写进本地文件，相当于给记忆拍快照"""
-        with open(path, 'w', encoding='utf-8') as f:
+        with open(path, "w", encoding="utf-8") as f:
             json.dump(self.messages, f, ensure_ascii=False, indent=2)
-
 
     def load(self, path="history.json"):
         """从本地文件反序列化，恢复对话历史到内存"""
-        if not os.path.exists(path):  #确认文件存在
+        if not os.path.exists(path):  # 确认文件存在
             print("没有历史文件，开始新对话")
             return
-        
-        with open(path, 'r', encoding='utf-8') as f:
+
+        with open(path, "r", encoding="utf-8") as f:
             self.messages = json.load(f)
 
         # 防止重复塞 system，避免模型看到两个人设精分
-        if not any(m.get('role') == 'system' for m in self.messages):
-            self.messages.insert(0, {
-                'role':'system',
-                'content':'你是索蕾娜，安的私人助手，说话自然简洁。'
-            })
-
+        if not any(m.get("role") == "system" for m in self.messages):
+            self.messages.insert(
+                0,
+                {
+                    "role": "system",
+                    "content": "你是索蕾娜，安的私人助手，说话自然简洁。",
+                },
+            )
 
     def chat(self, message: str) -> str:
         """发送用户消息，拿到回复后存盘"""
@@ -53,21 +75,23 @@ class OllamaClient:
             "model": self.model,
             "messages": self.messages,  # 投喂记忆库-多轮对话的核心
             "stream": False,  # 确保非流式输出
-            "options": {"num_ctx": 2048},  #限制上下文窗口
+            "options": {"num_ctx": 2048},  # 限制上下文窗口
+            "tools": TOOLS,
         }
 
         try:
-            start = time.time()  # 请求开始计时
+            start = time.time()  # 开始计时
             r = requests.post(url, json=payload, timeout=180)
             data = r.json()
-            #确保真正的错误信息被暴露出来
-            if 'error' in data:
+            print(data)
+            # 确保真正的错误信息被暴露出来
+            if "error" in data:
                 return f"请求失败：{data['error']}"
-            reply = data["message"]["content"]  #易报错为'message'
+            reply = data["message"]["content"]  # 易报错为'message'
             self.messages.append(
                 {"role": "assistant", "content": reply}
             )  # 追加模型回答
-            cost = time.time() - start  # 记录请求用时
+            cost = time.time() - start  # 结束计时，记录请求用时
 
             if self.verbose:
                 print(f"模型：{self.model}")
@@ -86,10 +110,9 @@ class OllamaClient:
             print(f"响应内容：{r.text}")
             return f"请求失败：HTTP错误 {e}"
         except (ValueError, KeyError, TypeError) as e:
-            #打印Ollama实际返回的内容，方便排查
+            # 打印Ollama实际返回的内容，方便排查
             print(f"解析失败，Ollama返回的原始数据：{r.text}")
             return f"请求失败：{e}"
-      
 
     def clear_history(self):
         """清除记忆库"""
@@ -98,11 +121,12 @@ class OllamaClient:
 
 
 if __name__ == "__main__":
-    client = OllamaClient( system="你是索蕾娜，安的私人助手，说话自然简洁。")
+    client = OllamaClient(system="你是索蕾娜，安的私人助手，说话自然简洁。")
     client.load()
     while True:
         prompt = input("你：")
-        if prompt == 'goodbye':
-            print('再见！')
+        if prompt == "goodbye":
+            print("再见！")
             break
         print(client.chat(prompt))
+
