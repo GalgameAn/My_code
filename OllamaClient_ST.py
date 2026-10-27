@@ -3,41 +3,46 @@ import os
 import json
 import requests
 from datetime import datetime
+from urllib.parse import quote
 from solena_System_Prompt import SYSTEM_PROMPT
 
 
 def get_current_time():
     """报时"""
-    return datetime.now().strftime("%Y-%m-%d_%H:%M:%S")
+    return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     #datetime.now()>>获取当前时间  strftime("%Y-%m-%d %H:%M:%S")>>转换 年-月-日 时-分-秒 的格式
 
 
 def calculator(operation, a, b):
     """计算器函数：支持加减乘除"""
-    operation = operation.strip().lower()
-    a = float(a)
-    b = float(b)
-    if operation == '+':
-        return str(a + b)
-    elif operation == '-':
-        return str(a - b)
-    elif operation == '×' or operation == '*':
-        return str(a * b)
-    elif operation == '÷' or operation == '/':
-        if b == 0:
-            return "错误：除数不能为零"
-        return str(a / b)
-    else:
-        return f"错误：不支持的操作 '{operation}'，仅支持 + - × ÷"
+    try:
+        operation = operation.strip().lower()
+        a = float(a)
+        b = float(b)
+        if operation == '+':
+            return str(a + b)
+        elif operation == '-':
+            return str(a - b)
+        elif operation == '×' or operation == '*':
+            return str(a * b)
+        elif operation == '÷' or operation == '/':
+            if b == 0:
+                return "错误：除数不能为零"
+            return str(a / b)
+        else:
+            return f"错误：不支持的操作 '{operation}'，仅支持 + - × ÷"
+    except (TypeError, AttributeError, ValueError) as e:
+        return f"请求错误：{e}"
     
 
 def get_weather(city='武汉'):
     """查询指定城市的天气"""
-    url = "https://wttr.in/" + city + "?format=3&lang=zh"
+    url = "https://wttr.in/{quote(city)}?T"
     try:
-        r = requests.get(url, timeout=300)
+        r = requests.get(url, timeout=10)
+        r.raise_for_status()
         return r.text.strip()
-    except:
+    except Exception:
         return f"暂时查不到{city}的天气"
 
 
@@ -150,135 +155,136 @@ class OllamaClient:
         if not any(m.get("role") == "system" for m in self.messages):
             self.messages.insert(0, {'role':'system', 'content':SYSTEM_PROMPT})
 
-    def chat(self, message: str) -> str:
+    def chat(self, message):
         """发送用户消息，拿到回复后存盘"""
         self.messages.append({"role": "user", "content": message})  # 追加我的文本
         url = f"{self.url}/api/chat"
-        payload = {
-            "model": self.model,
-            "messages": self.messages,  # 投喂记忆库-多轮对话的核心
-            "stream": True,  # 告知 Ollama 要流式输出
-            "options": {"num_ctx": 2048},  # 限制上下文窗口
-            "tools": TOOLS,     #调用工具
-        }
+        max_tool_calls = 4
+        current_tool_calls = 0
 
-        try:
-            full_reply = ""
-            start = time.time()  # 开始计时
-            tool_calls = None
-            print("solena：",end="")
-            with requests.post(url, json=payload, stream=True) as r:    # 向 Ollama 发出第一次发送请求，可能输出[日常回复信息(self.messages)]，或存储[调用工具结果(TOOLS)]并发送二次请求
-                r.raise_for_status()    #抛出4、5类异常给HTTPError
-                for line in r.iter_lines():
-                    if line:
-                        chunk = json.loads(line)                      
-                        data = chunk.get("message",{})
+        print("solena：",end="")
+        
+        start = time.time()  # 开始计时
+        while True:
+            payload = {
+                        "model": self.model,
+                        "messages": self.messages,  # 投喂记忆库-多轮对话的核心
+                        "stream": True,  # 告知 Ollama 要流式输出
+                        "options": {"num_ctx": 2048},  # 限制上下文窗口
+                        "tools": TOOLS,     #调用工具
+                    }
+             
+            try:
+                full_reply = ""
+                tool_calls = []
 
-                        # 在循环内捕获含tool_calls的消息
-                        if data.get("tool_calls"):      # {"role": "assistant", "content": "", "tool_calls": [{"id": "call_1", "function": {"name": "get_weather", "arguments": "{}"}}]}
-                            tool_calls = data.get("tool_calls")
-                            tool_calls_message = data
+                with requests.post(url, json=payload, stream=True, timeout=(5,120)) as r:    
+                    r.raise_for_status()    #抛出4、5类异常给HTTPError
 
-                        content = data.get("content","")
-                        if content:
-                            full_reply += content
-                            print(content, end='', flush=True)
+                    for line in r.iter_lines():
+                        if line:
+                            chunk = json.loads(line)
+                            
+                            if "error" in chunk:
+                                print(f"请求错误：{chunk['error']}")
+                                break
 
-                if tool_calls:
-                    # 支持多个工具
-                    tool_results = []
-                    for tool_call in tool_calls:
+                            data = chunk.get("message",{})
 
-                        # 拿到模型想调的函数名和参数
-                        func = tool_call.get('function', {})
-                        name = func.get('name', '')
-                        args = func.get('arguments', '')
+                            # 在循环内捕获含tool_calls的消息
+                            if data.get("tool_calls"):      # {"role": "assistant", "content": "", "tool_calls": [{"id": "call_1", "function": {"name": "get_weather", "arguments": "{}"}}]}
+                                tool_calls.extend(data.get("tool_calls",[]))
 
-                        # 如果 args 是字符串，json.loads 转字典
-                        if isinstance(args, str):
-                            args = json.loads(args)
+                            content = data.get("content","") or data.get("delta",{}).get("content","")      # 兼容 Ollama 不同版本的流式响应格式
+                            if content:
+                                full_reply += content
+                                print(content, end='', flush=True)
 
+                    if tool_calls:
 
-                        # 执行对应的函数
-                        if name == 'get_current_time':
-                            result = get_current_time()
-                        elif name == "calculator":
-                        # calculator 需要 operation, a, b 三个参数
-                            result = calculator(
-                                operation=args.get('operation'),
-                                a=args.get('a'),
-                                b=args.get('b'),
-                            )
-                        elif name == 'get_weather':
-                            result = get_weather(city=args.get('city', '武汉'))
+                        current_tool_calls += 1
+                        if current_tool_calls > max_tool_calls:
+                            print("[警告]调用工具次数过多，已强制终止")
+                            self.messages.append({"role": "assistant", "content": full_reply or "工具调用次数过多，无法继续处理。"})
+                            self.save()
+
+                            break
+
+                        # 多个工具
+                        tool_results = []
+                        for tool_call in tool_calls:
+
+                            # 拿到模型想调的函数名和参数
+                            func = tool_call.get('function', {})
+                            name = func.get('name', '')
+                            args = func.get('arguments', '')
+
+                            # 如果 args 是字符串，json.loads 转字典
+                            try:
+                                if isinstance(args, str):
+                                    args = json.loads(args)
+                            except json.JSONDecodeError as e:
+                                print(f"JSON 解析失败：{e}")
+                                args = {}
+
+                            # 执行对应的函数
+                            if name == 'get_current_time':
+                                result = get_current_time()
+                            elif name == "calculator":
+                                result = calculator(operation=args.get('operation'),a=args.get('a'), b=args.get('b'))   # calculator 需要 operation, a, b 三个参数
+                            elif name == 'get_weather':
+                                result = get_weather(city=args.get('city', '武汉'))
+                            else:
+                                result = f"不知道这个函数: {name}"
+
+                            # 追加所有工具结果
+                            tool_call_id = tool_call.get('id', f"call_{len(tool_results)}")   # [1]模型返回的每个工具调用都有一个唯一 ID，比如 "call_9xpdxqaf"。[2]"id" 有时不一定存在，默认值 f'call_{len(tool_results)}'会返回有序 ID（比如 'call_0'、'call_1'）>>> 原理：用叠加的数量来代表顺序
+                            tool_results.append({'role':'tool', 'content':str(result), 'tool_call_id': tool_call_id})
+
+                        # 记录模型调用工具的结果 full_reply 和过程 tool_calls_msg
+                        assistant_msg = {'role':'assistant', 'content':full_reply, 'tool_calls':tool_calls}
+                        self.messages.append(assistant_msg)
+
+                        # 把所有工具结果都追加到消息历史
+                        for tr in tool_results:
+                            self.messages.append(tr) 
+                        
+                        self.save()
+
+                        continue
+
+                    else:
+                        # 模型不打算调用工具了，直接回复了
+                        if full_reply:      # 预防空回复污染历史文本
+                            self.messages.append({"role": "assistant", "content": full_reply})  # 追加模型回答
+                            self.save()
                         else:
-                            result = f"不知道这个函数: {name}"
+                            empty_reply = "抱歉，我暂时无法回答这个问题，请稍后再试。"
+                            self.messages.append({"role": "assistant", "content": empty_reply})
 
 
-                        # 追加所有工具结果
-                        tool_results.append({
-                            'role':'tool',
-                            'content':result,
-                            'tool_call_id': tool_call.get('id', f"call_{len(tool_results)}")     # [1]模型返回的每个工具调用都有一个唯一 ID，比如 "call_9xpdxqaf"。[2]"id" 有时不一定存在，默认值 f'call_{len(tool_results)}'会返回有序 ID（比如 'call_0'、'call_1'）>>> 原理：用叠加的数量来代表顺序
-                        })
+                        cost = time.time() - start  # 结束计时，记录请求用时
+                                    
+                        if self.verbose:
+                            print(f"\n模型：{self.model}")
+                            print(f"耗时：{cost:.2f}s")
 
-                    # 让模型知道它调了工具
-                    self.messages.append(tool_calls_message)
+                        break
 
-                    # 把所有工具结果都追加到消息历史
-                    for tr in tool_results:
-                        self.messages.append(tr)
-
-                    payload2 = {
-                        'model':self.model,
-                        'messages':self.messages,
-                        'stream':False,
-                        }
-
-                    r2 = requests.post(url, json=payload2, timeout=300)     # 向 Ollama 发出第二次请求,输出[工具结果(经过包装)]
-                    r2.raise_for_status()
-                    data2 = r2.json()
-
-                    # 防止模型陷入调用工具的死循环
-                    message2 = data2.get('message', {})
-                    if message2.get('tool_call'):
-                        raise ValueError("第二次请求又收到了tool_calls，模型可能无法正确处理")  #raise 的作用当程序运行到 raise 这一行时，立刻中断当前流程，把异常信息一层一层往外抛，直到被 try-except 捕获，或者程序直接崩溃并打印错误信息。示例：流程：raise ValueError(...) 被触发程序立刻跳出 try 块，进入 except 块except 捕获到这个 ValueError，把它存到变量 e 里打印错误信息，返回错误字符串
-                    reply2 = message2.get('content', '')
-
-                    
-                    # 把最终回复也存入历史并保存
-                    self.messages.append({"role": "assistant", "content": reply2})
-                    self.save()
-
-                    # 输出调用工具结果
-                    print(reply2)
-                
-                # 确保真正的错误信息被暴露出来
-                if "error" in data:
-                    print(f"请求失败：{data['error']}") 
-                
-                self.messages.append(
-                    {"role": "assistant", "content": full_reply}
-                )  # 追加模型回答
-                
-                cost = time.time() - start  # 结束计时，记录请求用时
-
-                if self.verbose:
-                    print(f"模型：{self.model}")
-                    print(f"耗时：{cost:.2f}s")
-
-                self.save()  # 确保在程序崩溃时，减小文本损失
-
-        except requests.exceptions.ConnectionError:
-            print("请求失败：请确保ollama是否正常运行中") 
-        except requests.exceptions.Timeout:
-            print("请求失败：连接超时，请稍后重试") 
-        except requests.exceptions.HTTPError as e:
-            # 打印Ollama实际返回的内容，方便排查
-            print(f"请求失败：HTTP错误 {e}") 
-        except (ValueError, KeyError, TypeError) as e:
-            # 打印Ollama实际返回的内容，方便排查
-            print(f"请求失败：{e}")
+            except requests.exceptions.ConnectionError:
+                print("请求失败：请确保ollama是否正常运行中") 
+                continue           
+            except requests.exceptions.Timeout:
+                print("请求失败：连接超时，请稍后重试") 
+                continue
+            except requests.exceptions.HTTPError as e:
+                # 打印Ollama实际返回的内容，方便排查
+                print(f"请求失败：HTTP错误 {e}")
+                continue 
+            except (ValueError, KeyError, TypeError) as e:
+                # 打印Ollama实际返回的内容，方便排查
+                print(f"请求失败：{e}")
+                continue          
 
     def clear_history(self):
         """清除记忆库"""
