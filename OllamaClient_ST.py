@@ -37,7 +37,7 @@ def calculator(operation, a, b):
 
 def get_weather(city='武汉'):
     """查询指定城市的天气"""
-    url = "https://wttr.in/{quote(city)}?T"
+    url = "https://wttr.in/{quote(city)}?format=3&lang=zh-cn"   # 加上 format=3 让它只返回一行简短天气
     try:
         r = requests.get(url, timeout=10)
         r.raise_for_status()
@@ -128,7 +128,7 @@ class OllamaClient:
         if path is None:
             # 没传文件名，自动生成带时间戳的
             ts = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
-            path = f"backup_{ts}.json"
+            path = f"backup/backup_{ts}.json"
 
         with open(path, 'w',encoding='utf-8') as f:
             json.dump(self.messages, f, ensure_ascii=False,indent=2)
@@ -170,7 +170,7 @@ class OllamaClient:
                         "model": self.model,
                         "messages": self.messages,  # 投喂记忆库-多轮对话的核心
                         "stream": True,  # 告知 Ollama 要流式输出
-                        "options": {"num_ctx": 2048},  # 限制上下文窗口
+                        "options": {"num_ctx": 8192},  # 限制上下文窗口
                         "tools": TOOLS,     #调用工具
                     }
              
@@ -189,7 +189,7 @@ class OllamaClient:
                                 print(f"请求错误：{chunk['error']}")
                                 break
 
-                            data = chunk.get("message",{})
+                            data = chunk.get("message", {})
 
                             # 在循环内捕获含tool_calls的消息
                             if data.get("tool_calls"):      # {"role": "assistant", "content": "", "tool_calls": [{"id": "call_1", "function": {"name": "get_weather", "arguments": "{}"}}]}
@@ -259,8 +259,10 @@ class OllamaClient:
                             self.messages.append({"role": "assistant", "content": full_reply})  # 追加模型回答
                             self.save()
                         else:
-                            empty_reply = "抱歉，我暂时无法回答这个问题，请稍后再试。"
+                            empty_reply = "……嗯。这种话题，我暂时不展开。"
+                            print(empty_reply)
                             self.messages.append({"role": "assistant", "content": empty_reply})
+                            self.save()
 
 
                         cost = time.time() - start  # 结束计时，记录请求用时
