@@ -2,3 +2,8 @@
 __pycache__/
 *.pyc
 history.json
+backup/
+solena_System_Prompt.py
+test.py
+requests_ollama.code-workspace
+chroma_db/
