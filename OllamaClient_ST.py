@@ -1,10 +1,9 @@
-import time
-import os
-import json
-import requests
+import time, uuid, chromadb, os, json, requests
 from datetime import datetime
+from Privacy import desensitize
 from urllib.parse import quote
 from solena_System_Prompt import SYSTEM_PROMPT
+from chromadb.utils.embedding_functions import OllamaEmbeddingFunction
 
 
 def get_current_time():
@@ -33,8 +32,8 @@ def calculator(operation, a, b):
             return f"错误：不支持的操作 '{operation}'，仅支持 + - × ÷"
     except (TypeError, AttributeError, ValueError) as e:
         return f"请求错误：{e}"
-    
 
+    
 def get_weather(city='武汉'):
     """查询指定城市的天气"""
     url = "https://wttr.in/{quote(city)}?format=3&lang=zh-cn"   # 加上 format=3 让它只返回一行简短天气
@@ -116,12 +115,21 @@ class OllamaClient:
         self.url = base_url.strip("/")
         self.model = model
         self.verbose = verbose
-        self.messages = []      # 多轮对话-记忆库
+
+        # 多轮对话-短期记忆库
+        self.messages = []
+
+        # 多轮对话-长期记忆库
+        self.ollama_ef = OllamaEmbeddingFunction(url="http://localhost:11434", model_name="bge-m3")
+        self.client = chromadb.PersistentClient(path="./chroma_db")
+        self.collection = self.client.get_or_create_collection(name="solena_memory", embedding_function=self.ollama_ef)
+
 
     def save(self, path="history.json"):
         """把对话历史序列化后写进本地文件，相当于给记忆拍快照"""
         with open(path, "w", encoding="utf-8") as f:
             json.dump(self.messages, f, ensure_ascii=False, indent=2)
+
 
     def backup(self, path=None):
         """备份当前对话历史，默认生成带时间戳的文件名"""
@@ -135,12 +143,14 @@ class OllamaClient:
 
         print(f"solena：已备份到 {path}")
 
+
     def restore(self, path):
         """从备份文件恢复对话历史"""
         self.load(path)
         if path is not None:    # 判断 path 是否为空，防止写坏 history.json
             self.save()    
         print(f"solena：已从 {path} 中恢复记忆")        
+
 
     def load(self, path="history.json"):
         """从本地文件反序列化，恢复对话历史到内存"""
@@ -155,20 +165,64 @@ class OllamaClient:
         if not any(m.get("role") == "system" for m in self.messages):
             self.messages.insert(0, {'role':'system', 'content':SYSTEM_PROMPT})
 
+
+    def auto_save_to_RAG(self, user_message, assistant_reply):
+        """自动把对话存储到长期记忆"""
+        # 拼装文本
+        raw_text = f"安：{user_message}\n索蕾娜：{assistant_reply}"
+
+        # 文本脱敏
+        safe_text = desensitize(raw_text)
+
+        # 自动生成唯一随机 ID
+        memory_ID = str(uuid.uuid4())
+
+        # 存入 ChromaDB (未切块版)
+        try:
+            self.collection.upsert(documents=safe_text, ids=memory_ID)
+        except Exception as e:
+            print(f"长期记忆存储失败，详情：{e}")
+
+
     def chat(self, message):
         """发送用户消息，拿到回复后存盘"""
-        self.messages.append({"role": "user", "content": message})  # 追加我的文本
+
+        # 检索长期记忆
+        results = self.collection.query(query_texts=[message], n_results=2)
+        retrieved_memories = results["documents"][0]
+        retrieved_distances = results["distances"][0]
+
+        # 过滤检索记忆
+        context = ""
+        valid_memories = []
+        original_message = message      # 备份原文本，防止污染记忆库
+        message_to_model = original_message     # 初始化变量，防止污染喂给变量的内容
+        for i, r_d in enumerate(retrieved_distances):
+            if r_d < 0.5:
+                valid_memories.append(retrieved_memories[i])
+
+        if valid_memories:
+            context = "\n".join(valid_memories)
+            message_to_model = f"结合以下过去的回忆回答我：\n{context}\n\n用户现在提问：{original_message}"
+
+        # 追加我的文本
+        self.messages.append({"role": "user", "content": original_message})  # 注意录入原文本
+
         url = f"{self.url}/api/chat"
         max_tool_calls = 4
         current_tool_calls = 0
 
-        print("solena：",end="")
+        # 修改喂给服务端的内容
+        message_to_api = self.messages.copy()
+        message_to_api[-1] = {"role":"user", "content":message_to_model}
+
+        print("索蕾娜：",end="")
         
         start = time.time()  # 开始计时
         while True:
             payload = {
                         "model": self.model,
-                        "messages": self.messages,  # 投喂记忆库-多轮对话的核心
+                        "messages": message_to_api,  # 投喂记忆库-多轮对话的核心
                         "stream": True,  # 告知 Ollama 要流式输出
                         "options": {"num_ctx": 8192},  # 限制上下文窗口
                         "tools": TOOLS,     #调用工具
@@ -258,7 +312,9 @@ class OllamaClient:
                         if full_reply:      # 预防空回复污染历史文本
                             self.messages.append({"role": "assistant", "content": full_reply})  # 追加模型回答
                             self.save()
+                            self.auto_save_to_RAG(user_message=original_message, assistant_reply=full_reply)    # 注意录入原文本
                         else:
+                            # 告知模型，存在回答不了的问题时，响应方法，而不是空回复或崩溃
                             empty_reply = "……嗯。这种话题，我暂时不展开。"
                             print(empty_reply)
                             self.messages.append({"role": "assistant", "content": empty_reply})
@@ -287,6 +343,7 @@ class OllamaClient:
                 # 打印Ollama实际返回的内容，方便排查
                 print(f"请求失败：{e}")
                 continue          
+
 
     def clear_history(self):
         """清除记忆库"""

@@ -3,6 +3,7 @@ import os
 import json
 import requests
 from datetime import datetime
+from solena_System_Prompt import SYSTEM_PROMPT
 
 
 def get_current_time():
@@ -30,6 +31,16 @@ def calculator(operation, a, b):
         return f"错误：不支持的操作 '{operation}'，仅支持 + - × ÷"
     
 
+def get_weather(city='武汉'):
+    """查询指定城市的天气"""
+    url = "https://wttr.in/" + city + "?format=3&lang=zh"
+    try:
+        r = requests.get(url, timeout=300)
+        return r.text.strip()
+    except:
+        return f"暂时查不到{city}的天气"
+
+
 TOOLS = [
     {
         "type": "function",
@@ -40,19 +51,19 @@ TOOLS = [
                 "type": "object",
                 "properties": {},
                 "required": [],
-            },
-        },
+            }
+        }
     },
     {
         "type": "function",
         "function": {
             "name": "calculator",
             "description": "执行数学计算，支持加减乘除。当用户需要计算数学表达式时使用",
-            "parameters": {     #参数定义
-                "type": "object",
-                "properties": {
-                    'operation':{   #参数名称
-                        'type':'string',    #参数类型
+            "parameters": {     # 创建一个参数包
+                "type": "object",   # 让参数按照标准格式（键值对）排序的一个命令
+                "properties": {     # 包含参数具体内容de'bao
+                    'operation':{   # 参数名称
+                        'type':'string',    # 参数类型
                         'description':'运算符，可选值：+（加）、-（减）、×（乘）、÷（除）'
                         },
                     'a':{
@@ -62,12 +73,29 @@ TOOLS = [
                     'b':{
                         'type':'number',
                         'description':'第二个数',
-                        },
+                        }
                     },
-                "required": ['operation', 'a', 'b'],    #["必须提供的参数列表"]
-            },
-        },
+                "required": ['operation', 'a', 'b']   #["必须提供的参数列表"]
+            }
+        }
     },
+    {
+        'type':'function',
+        'function':{
+            'name':'get_weather',
+            'description':'查询指定城市天气',
+            'parameters':{
+                'type':'object',
+                'properties':{
+                    'city':{
+                        'type':'string',
+                        'description':'城市名称，如武汉、北京',
+                    }
+                },
+                'required':['city']
+            }
+        }
+    }
 ]
 
 
@@ -78,20 +106,25 @@ class OllamaClient:
         self,
         base_url="http://localhost:11434",
         model="qwen3.5:4b-q4_K_M",
-        verbose=True,   # 计时开关
-        system=None,    # 设定基础记忆模块
+        verbose=False,   # 计时开关
+        system=None,    # None >> 按照模型默认人格，调用指定人格，请输入参数 system=True
     ):
         self.url = base_url.strip("/")
         self.model = model
         self.verbose = verbose
         self.messages = []      # 多轮对话-记忆库
         if system:      # 判断是否存在基础记忆
-            self.messages.append({"role": "system", "content": system})
+            self.messages.append({"role": "system", "content": SYSTEM_PROMPT})
 
     def save(self, path="history.json"):
         """把对话历史序列化后写进本地文件，相当于给记忆拍快照"""
         with open(path, "w", encoding="utf-8") as f:
             json.dump(self.messages, f, ensure_ascii=False, indent=2)
+
+    def backup(self, path="backup.json"):
+        """所有对话历史备份"""
+        with open(path, 'a',encoding='utf-8') as f:
+            json.dump(self.messages, f, ensure_ascii=False,indent=2)
 
     def load(self, path="history.json"):
         """从本地文件反序列化，恢复对话历史到内存"""
@@ -108,7 +141,7 @@ class OllamaClient:
                 0,
                 {
                     "role": "system",
-                    "content": "你是索蕾娜，安的私人助手，说话自然简洁。",
+                    "content": SYSTEM_PROMPT,
                 },
             )
 
@@ -155,6 +188,8 @@ class OllamaClient:
                             a=args.get('a'),
                             b=args.get('b'),
                         )
+                    elif func_name == 'get_weather':
+                        result = get_weather(city=args.get('city', '武汉'))
                     else:
                         result = f"不知道这个函数: {func_name}"
 
@@ -194,10 +229,12 @@ class OllamaClient:
             # 确保真正的错误信息被暴露出来
             if "error" in data:
                 return f"请求失败：{data['error']}"
+            
             reply = data["message"]["content"]  # 易报错为'message'
             self.messages.append(
                 {"role": "assistant", "content": reply}
             )  # 追加模型回答
+            
             cost = time.time() - start  # 结束计时，记录请求用时
 
             if self.verbose:
@@ -225,19 +262,3 @@ class OllamaClient:
         """清除记忆库"""
         self.messages = []
         self.save()  # 把空列表写回去，覆盖旧文件
-
-
-if __name__ == "__main__":
-    client = OllamaClient(system="你是索蕾娜，安的私人助手，说话自然简洁。")
-    client.load()
-    while True:
-        prompt = input("你：")
-        if prompt == "goodbye":
-            print("再见！")
-            break
-        elif prompt == "clear":
-            client.save(path='backup.json')
-            client.clear_history()
-            print('已清空历史')
-        print(client.chat(prompt))
-

@@ -4,12 +4,12 @@ client = OllamaClient_ST.OllamaClient()
 client.load()
 while True:
     try:
-        prompt = input("master：").strip()
+        prompt = input("安：").strip()
 
         if prompt == "再见":
-            print("solena：……再见,master")
+            print("索蕾娜：……再见,安")
             break
-        elif prompt == "clear":
+        elif prompt == "备份":
             client.backup()
             client.clear_history()
             continue
@@ -20,7 +20,7 @@ while True:
         print()
         
     except KeyboardInterrupt:
-        print("solena：……再见,master")
+        print("索蕾娜：……再见,安")
         break
     except Exception as e:
         print(f"请求错误：{e}")

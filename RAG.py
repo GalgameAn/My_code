@@ -2,6 +2,7 @@ import chromadb
 import requests
 import json 
 from Text_splitter import split_text
+from Privacy import desensitize
 from chromadb.utils.embedding_functions import OllamaEmbeddingFunction
 
 ollama_ef = OllamaEmbeddingFunction(url="http://localhost:11434", model_name="bge-m3")
