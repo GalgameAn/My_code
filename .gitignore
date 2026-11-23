@@ -1,9 +1,10 @@
 .venv/
 __pycache__/
 *.pyc
-history.json
+history_ST.json
+history_SF.json
 backup/
 solena_System_Prompt.py
 test.py
-requests_ollama.code-workspace
 chroma_db/
+Solena_V1.code-workspace

@@ -37,6 +37,7 @@ if r_m:
     context = "\n".join(r_m)
     system_prompt = f"你叫索蕾娜，是安的私人 AI。以下是你们之前的记忆：\n{context}\n请结合记忆回答安的问题，不要编造。"
 
+    # 流式输出固定模块(1)
     url = "http://localhost:11434/api/chat"
     payload = {
         "model":"qwen3.5:4b-q4_K_M",
@@ -45,6 +46,7 @@ if r_m:
         "options":{"num_ctx": 8192}
     }
 
+    # 流式输出固定模块(2)
     with requests.post(url, json=payload, stream=True, timeout=300) as r:
         for line in r.iter_lines():
             if line:

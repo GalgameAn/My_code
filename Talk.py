@@ -1,4 +1,4 @@
-import OllamaClient_ST
+import OllamaClient_ST, OllamaClient_SF
 
 client = OllamaClient_ST.OllamaClient()  
 client.load()
