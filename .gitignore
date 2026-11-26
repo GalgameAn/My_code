@@ -6,5 +6,5 @@ history_SF.json
 backup/
 solena_System_Prompt.py
 test.py
-chroma_db/
+chroma_db_test/
 Solena_V1.code-workspace

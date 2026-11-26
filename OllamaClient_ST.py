@@ -13,7 +13,7 @@ class OllamaClient:
         base_url="http://localhost:11434",
         model="qwen3.5:4b-q4_K_M",
         verbose=False,   # 计时开关
-    ):
+        ):
         self.url = base_url.strip("/")
         self.model = model
         self.verbose = verbose
@@ -23,8 +23,8 @@ class OllamaClient:
 
         # 多轮对话-长期记忆库
         self.ollama_ef = OllamaEmbeddingFunction(url="http://localhost:11434", model_name="bge-m3")
-        self.client = chromadb.PersistentClient(path="./chroma_db")
-        self.collection = self.client.get_or_create_collection(name="solena_memory", embedding_function=self.ollama_ef)
+        self.client = chromadb.PersistentClient(path="./chroma_db_test")
+        self.collection = self.client.get_or_create_collection(name="test_memory", embedding_function=self.ollama_ef)
 
 
     def save(self, path="history_ST.json"):

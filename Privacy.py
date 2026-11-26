@@ -12,3 +12,6 @@ def desensitize(text):
     text = re.sub(r"(password\s*=\s*|\s*密码是\s*|\s*账号是\s*)\S[^，,。！!？?\s]+", r"\1[敏感信息已脱敏]", text)
 
     return text
+
+if __name__ == "__main__":
+    print(desensitize("我的手机号是19137925505"))
