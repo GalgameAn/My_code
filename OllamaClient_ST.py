@@ -37,13 +37,12 @@ class OllamaClient:
         os.replace(tmp, path)       # 原子替换：把老文件干掉，把临时文件名改成正式文件名
 
 
-
     def restore(self, path):
         """从备份文件恢复对话历史"""
         self.load(path)
         if path is not None:    # 判断 path 是否为空，防止写坏 history_ST.json
             self.save()    
-        print(f"索蕾娜：已从 {path} 中恢复记忆")        
+        print(f"索蕾娜：\n已从 {path} 中恢复记忆")        
 
 
     def load(self, path="history_ST.json"):
@@ -56,10 +55,10 @@ class OllamaClient:
                 # 如果 JSON 解析失败(文件坏了)
                 corrupt = path + ".corrupt"     # 添加 .corrupt 后缀
                 os.replace(path, corrupt)       # 把损坏文件改名备份
-                print(f"索蕾娜：历史文件损坏，已备份到{corrupt}，开启新的文本框")
+                print(f"索蕾娜：\n历史文件损坏，已备份到{corrupt}，开启新的文本框")
                 self.messages = []
         else:
-            print("索蕾娜：历史文本不存在，开启新的文本框")
+            print("索蕾娜：\n历史文本不存在，开启新的文本框")
             self.messages = []
 
         # 防止 system 重复出现，确保人格稳定性
@@ -87,13 +86,13 @@ class OllamaClient:
 
         # 确保 path 的指向目录存在，如 backup/
         parent = os.path.dirname(path)      # 提取出 backup 文件夹路径
-        if parent:                          # 如果路径里未包含文件夹
-            os.makedirs(parent, exist_ok=True)  # 自动创建文件夹
+        if parent:                          # 如果路径里未包含该文件夹
+            os.makedirs(parent, exist_ok=True)      # 自动创建文件夹
         
         with open(path, 'w',encoding='utf-8') as f:
             json.dump(self.messages, f, ensure_ascii=False,indent=2)
     
-        print(f"索蕾娜：已备份到 {path}")
+        print(f"索蕾娜：\n已备份到 {path}")
     
 
     def auto_save_to_RAG(self, user_message, assistant_reply):
@@ -117,6 +116,7 @@ class OllamaClient:
     def chat(self, message):
         """发送用户消息，拿到回复后存盘"""
 
+        url = f"{self.url}/api/chat"
         context = ""
         valid_memories = []
         original_message = message      # 备份原文本，防止污染记忆库
@@ -133,33 +133,38 @@ class OllamaClient:
                 if r_d < 0.5:
                     valid_memories.append(retrieved_memories[i])
         except Exception as e:
-            print(f"索蕾娜：长期记忆检索失败，原因查明为：\n{e}")
+            print(f"索蕾娜：\n长期记忆检索失败，原因查明为：{e}")
 
         # 缝合检索文本
         if valid_memories:
             context = "\n".join(valid_memories)
             message_to_model = f"结合以下过去的回忆回答我：\n{context}\n\n用户现在提问：{original_message}"  
 
-        url = f"{self.url}/api/chat"
+        # 本轮暂存区，只记录每一轮的新消息(核心用于写入正式历史)
+        turn_messages = [{"role":"user", "content":message_to_model}]
+
+        # 发给 API 的完整上下文 = 历史 + 每轮暂存区
+        api_messages = self.messages + turn_messages
+
+        # 调用工具最大次数
         max_tool_calls = 4
         current_tool_calls = 0
+
+        # 记录网络重试次数和最大次数
+        max_retries = 3
+        current_retries = 0
 
         # 开始计时
         start = time.time()
 
-        print("索蕾娜：",end="")
-        while True:
-            # 先构造喂给服务端的内容，程序运行成功后，再追加我的文本，防止程序崩溃时，重复出现我的文本，污染记忆库
-            message_to_api = self.messages + [{"role":"user", "content":original_message}]
-            if message_to_api[-1]["role"] == "user":
-                message_to_api[-1] = {"role":"user", "content":message_to_model}
-
+        print("索蕾娜：")
+        while True:           
             payload = {
-                "model": self.model,
-                "messages": message_to_api,  # 投喂记忆库-多轮对话的核心
-                "stream": True,  # 告知 Ollama 要流式输出
-                "options": {"num_ctx": 8192},  # 限制上下文窗口
-                "tools": Tools.TOOLS,     #调用工具
+                "model":self.model,
+                "messages":api_messages,       
+                "stream": True,                # 告知 Ollama 要流式输出
+                "options":{"num_ctx": 8192},   # 限制上下文窗口
+                "tools":Tools.TOOLS,           # 调用工具
                 }
              
             try:
@@ -174,8 +179,7 @@ class OllamaClient:
                             chunk = json.loads(line)
                             
                             if "error" in chunk:
-                                print(f"请求错误：{chunk['error']}")
-                                break
+                                raise ValueError(f"Ollama返回错误：{chunk['error']}")   # 跳出所有循环，抛出 Ollama 的返回错误
 
                             data = chunk.get("message", {})
 
@@ -192,10 +196,9 @@ class OllamaClient:
 
                         current_tool_calls += 1
                         if current_tool_calls > max_tool_calls:
-                            print("[警告]调用工具次数过多，已强制终止")
-                            self.messages.append({"role": "assistant", "content": full_reply or "工具调用次数过多，无法继续处理。"})
-                            self.save()
-
+                            print("调用工具次数过多，已强制终止")
+                            turn_messages.append({"role": "assistant", "content": full_reply or "工具调用次数过多，无法继续处理。"})
+                            
                             break
 
                         # 多个工具
@@ -231,55 +234,58 @@ class OllamaClient:
 
                         # 记录模型调用工具的结果 full_reply 和过程 tool_calls_msg
                         assistant_msg = {'role':'assistant', 'content':full_reply, 'tool_calls':tool_calls}
-                        self.messages.append(assistant_msg)
+                        turn_messages.append(assistant_msg)
 
                         # 把所有工具结果都追加到消息历史
                         for tr in tool_results:
-                            self.messages.append(tr) 
-                        
-                        self.save()
+                            turn_messages.append(tr) 
+
+                        # 每次追加完，更新发给 API 的上下文
+                        api_messages = self.messages + turn_messages
 
                         continue
 
                     # 模型不打算调用工具了，直接回复了
                     else:
-                        # 程序成功运行-追加我的文本(注意录入原文本)
-                        self.messages.append({"role": "user", "content": original_message})
-                        # 预防空回复污染历史文本
-                        if full_reply:
-                            # 追加模型的文本
-                            self.messages.append({"role": "assistant", "content": full_reply})
-                            self.save()
-                            # 写入 RAG 库(# 注意录入原文本)
-                            self.auto_save_to_RAG(user_message=original_message, assistant_reply=full_reply)
-                        else:
-                            # 告知模型，存在回答不了的问题时，响应方法，而不是空回复或崩溃
-                            empty_reply = "……嗯。这种话题，我暂时不展开。"
-                            print(empty_reply)
-                            self.messages.append({"role": "assistant", "content": empty_reply})
-                            self.save()
+                        if not full_reply:
+                           full_reply = "...嗯。这种话题，我无法给予回答"
+                           print(full_reply)
 
-
-                        cost = time.time() - start  # 结束计时，记录请求用时
-                                    
-                        if self.verbose:
-                            print(f"\n模型：{self.model}")
-                            print(f"耗时：{cost:.2f}s")
-
+                        turn_messages.append({"role":"assistant", "content":full_reply})
+                        
                         break
 
-            except requests.exceptions.ConnectionError:
-                print("请求失败：请确保ollama是否正常运行中") 
-                continue           
-            except requests.exceptions.Timeout:
-                print("请求失败：连接超时，请稍后重试") 
+            # 网络类错误：可以重试，但限制次数
+            except (requests.exceptions.ConnectionError, requests.exceptions.Timeout) as e:
+                current_retries += 1
+                if current_retries > max_retries:
+                    print(f"网络或 Ollama 连接失败已达{max_retries}次，强制终止本次对话。")
+                    raise e     # 彻底抛出异常，让 Talk.py 去接住它，不在死循环
+
+                print(f"连接失败，正在第{current_retries}次重试，将再次重试{max_retries - current_retries}次，请确保 Ollama 正常运行...")
+                time.sleep(2)
                 continue
+
+            # HTTP 4xx 错误(譬如格式不对)和解析错误：重试无用，直接报错
             except requests.exceptions.HTTPError as e:
-                # 打印Ollama实际返回的内容，方便排查
-                print(f"请求失败：HTTP错误 {e}")
-                continue 
+                print(f"HTTP 错误，可能是模型或代码格式问题，不再重试：{e}")
+                raise e
             except (ValueError, KeyError, TypeError) as e:
-                # 打印Ollama实际返回的内容，方便排查
-                print(f"请求失败：{e}")
-                continue          
-                        
+                print(f"数据解析或响应错误：{e}")
+                raise e
+
+        # 存储我的原文本
+        self.messages.append({"role":"user", "content":original_message})
+
+        # 提取暂存区信息，并存入正式历史
+        for msg in turn_messages[1:]:
+            self.messages.append(msg)
+
+        # 保存到硬盘和 RAG向量库
+        self.save()
+        self.auto_save_to_RAG(user_message=original_message, assistant_reply=full_reply)
+
+        cost = time.time() - start
+        if self.verbose:
+            print(f"模型：{self.model}")
+            print(f"耗时：{cost:.2f}s")
