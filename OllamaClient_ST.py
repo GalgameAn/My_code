@@ -116,6 +116,10 @@ class OllamaClient:
     def chat(self, message):
         """发送用户消息，拿到回复后存盘"""
 
+        # 拦截空输入
+        if not message or not message.strip():
+            return "...安，请输入正确文本"
+
         url = f"{self.url}/api/chat"
         context = ""
         valid_memories = []
@@ -289,3 +293,5 @@ class OllamaClient:
         if self.verbose:
             print(f"模型：{self.model}")
             print(f"耗时：{cost:.2f}s")
+
+        return full_reply
